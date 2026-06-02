@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WooCommerce Menu Hub
- * Description: Универсальный консолидатор админ-меню. Любой пункт любого плагина можно СКРЫТЬ или ВСТРОИТЬ как вкладку в единый хаб. Настраивается через UI — без правки кода плагинов.
- * Version: 1.0.0
+ * Description: Универсальный консолидатор админ-меню. Любой пункт любого плагина можно СКРЫТЬ или ВСТРОИТЬ как вкладку в единый хаб. Можно применять только к не-администраторам. Настраивается через UI — без правки кода плагинов.
+ * Version: 1.1.0
  * Author: Al Nemirov
  * Requires PHP: 7.4
  * License: MIT
@@ -45,9 +45,24 @@ class WP_Hub {
         return wp_parse_args( get_option( self::OPT, [] ), [
             'hub_title' => '📦 Отправка',
             'hub_icon'  => 'dashicons-archive',
-            'items'     => [],   // key "parent>slug" или "slug" => 'show'|'hide'|'embed'
-            'labels'    => [],   // key => человекочитаемая подпись (для вкладки)
+            'items'     => [],          // key "parent>slug" или "slug" => 'show'|'hide'|'embed'
+            'labels'    => [],          // key => человекочитаемая подпись (для вкладки)
+            'apply_to'  => 'non_admins', // 'non_admins' | 'all' — к кому применять правила
         ] );
+    }
+
+    /**
+     * Применять ли правила (скрытие/встраивание) к текущему пользователю.
+     * 'non_admins' (по умолчанию) — админ (manage_options) видит полное меню, остальные — урезанное.
+     * 'all' — ко всем.
+     * Страница настроек самого плагина доступна всегда (manage_options).
+     */
+    private static function applies(): bool {
+        $cfg = self::cfg();
+        if ( ( $cfg['apply_to'] ?? 'non_admins' ) === 'all' ) {
+            return true;
+        }
+        return is_user_logged_in() && ! current_user_can( 'manage_options' );
     }
 
     private static function parse_key( string $key ): array {
@@ -64,7 +79,7 @@ class WP_Hub {
         $cfg = self::cfg();
 
         $has_embed = in_array( 'embed', $cfg['items'], true );
-        if ( $has_embed ) {
+        if ( $has_embed && self::applies() ) {
             add_menu_page(
                 $cfg['hub_title'],
                 $cfg['hub_title'],
@@ -94,6 +109,9 @@ class WP_Hub {
     /* ── Применение правил: скрыть / встроить (= убрать из меню) ─ */
 
     public static function apply_rules(): void {
+        if ( ! self::applies() ) {
+            return;
+        }
         $cfg = self::cfg();
         foreach ( $cfg['items'] as $key => $action ) {
             if ( $action !== 'hide' && $action !== 'embed' ) {
@@ -159,6 +177,9 @@ class WP_Hub {
 
     /** Впрыск панели вкладок на встроенных страницах. */
     public static function inject_tabbar(): void {
+        if ( ! self::applies() ) {
+            return;
+        }
         $cur  = self::current_page();
         $tabs = self::embedded_tabs();
         if ( $cur !== self::HUB_SLUG && ! isset( $tabs[ $cur ] ) ) {
@@ -241,6 +262,7 @@ class WP_Hub {
             $cfg = self::cfg();
             $cfg['hub_title'] = sanitize_text_field( wp_unslash( $_POST['hub_title'] ?? '📦 Отправка' ) );
             $cfg['hub_icon']  = sanitize_text_field( wp_unslash( $_POST['hub_icon'] ?? 'dashicons-archive' ) );
+            $cfg['apply_to']  = ( ( $_POST['apply_to'] ?? 'non_admins' ) === 'all' ) ? 'all' : 'non_admins';
             $actions = isset( $_POST['wphub'] ) && is_array( $_POST['wphub'] ) ? wp_unslash( $_POST['wphub'] ) : [];
             $labels_in = isset( $_POST['wphub_label'] ) && is_array( $_POST['wphub_label'] ) ? wp_unslash( $_POST['wphub_label'] ) : [];
             $items = [];
@@ -280,6 +302,13 @@ class WP_Hub {
                         <th>Иконка (dashicon)</th>
                         <td><input type="text" name="hub_icon" value="<?php echo esc_attr( $cfg['hub_icon'] ); ?>" class="regular-text" placeholder="dashicons-archive">
                             <p class="description"><a href="https://developer.wordpress.org/resource/dashicons/" target="_blank">список dashicons</a></p></td>
+                    </tr>
+                    <tr>
+                        <th>Кому применять</th>
+                        <td>
+                            <label style="display:block;margin-bottom:4px"><input type="radio" name="apply_to" value="non_admins" <?php checked( $cfg['apply_to'] ?? 'non_admins', 'non_admins' ); ?>> Всем, кроме администраторов <span class="description">(админ видит полное меню)</span></label>
+                            <label style="display:block"><input type="radio" name="apply_to" value="all" <?php checked( $cfg['apply_to'] ?? 'non_admins', 'all' ); ?>> Всем, включая администраторов</label>
+                        </td>
                     </tr>
                 </table>
 
