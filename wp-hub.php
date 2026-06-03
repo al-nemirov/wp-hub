@@ -1,18 +1,18 @@
 <?php
 /**
- * Plugin Name: WooCommerce Menu Hub
- * Description: Универсальный консолидатор админ-меню. Любой пункт любого плагина можно СКРЫТЬ или ВСТРОИТЬ как вкладку в единый хаб. Можно применять только к не-администраторам. Настраивается через UI — без правки кода плагинов.
- * Version: 1.1.0
+ * Plugin Name: WP Admin Menu Hub
+ * Description: Универсальный консолидатор админ-меню WordPress/WooCommerce. Любой пункт любого плагина можно СКРЫТЬ или ВСТРОИТЬ как вкладку в единый хаб. Можно применять только к не-администраторам. Настраивается через UI — без правки кода плагинов.
+ * Version: 1.2.0
  * Author: Al Nemirov
  * Requires PHP: 7.4
  * License: MIT
  *
- * Как работает «встраивание»:
- *   страницу плагина НЕ переносим (иначе ломается её screen-specific JS — кнопки
- *   «тест связи» и т.п.). Вместо этого: убираем пункт из меню (remove_*_page — при
- *   этом страница остаётся доступной по URL), регистрируем один хаб-пункт и поверх
- *   всех встроенных страниц рисуем общую панель вкладок (in_admin_header). Получается
- *   единое меню с вкладками, а функциональность каждой страницы сохраняется.
+ * Как работает «встраивание/скрытие» (важно):
+ *   Пункт меню мы НЕ удаляем (remove_submenu_page/remove_menu_page ЛОМАЕТ доступ к
+ *   странице — WP начинает отвечать «у вас нет прав»). Вместо этого пункт прячется
+ *   через CSS (#adminmenu …{display:none}). Так и доступ к странице по URL сохраняется,
+ *   и её screen-specific JS не ломается. Встроенные пункты дополнительно собираются
+ *   в один хаб-пункт, а поверх их страниц рисуется общая панель вкладок (in_admin_header).
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -28,9 +28,13 @@ class WP_Hub {
     /* Пункты, которые НИКОГДА нельзя скрывать/встраивать (защита от самоблокировки). */
     const PROTECTED = [ 'wphub-settings', 'wphub-hub', 'options-general.php', 'index.php' ];
 
+    /** Подстроки href для CSS-скрытия пунктов меню (заполняется в apply_rules). */
+    private static $hide = [];
+
     public static function init(): void {
         add_action( 'admin_menu', [ __CLASS__, 'register_pages' ], 8 );
         add_action( 'admin_menu', [ __CLASS__, 'apply_rules' ], 9999 );
+        add_action( 'admin_head', [ __CLASS__, 'menu_css' ] );
         add_action( 'in_admin_header', [ __CLASS__, 'inject_tabbar' ] );
         add_action( 'admin_head', [ __CLASS__, 'styles' ] );
         add_filter(
@@ -83,7 +87,7 @@ class WP_Hub {
             add_menu_page(
                 $cfg['hub_title'],
                 $cfg['hub_title'],
-                'manage_woocommerce',
+                'read', // доступен любому, кто видит админку (встроенные страницы имеют свои capability)
                 self::HUB_SLUG,
                 [ __CLASS__, 'render_hub' ],
                 $cfg['hub_icon'] ?: 'dashicons-archive',
@@ -92,8 +96,8 @@ class WP_Hub {
         }
 
         add_options_page(
-            'WooCommerce Menu Hub',
-            'WC Menu Hub',
+            'WP Admin Menu Hub',
+            'Menu Hub',
             'manage_options',
             self::SETTINGS_SLUG,
             [ __CLASS__, 'render_settings' ]
@@ -108,6 +112,11 @@ class WP_Hub {
 
     /* ── Применение правил: скрыть / встроить (= убрать из меню) ─ */
 
+    /**
+     * Собираем список пунктов на скрытие. НЕ удаляем (это ломает доступ к странице) —
+     * прячем через CSS в menu_css(). И «скрыть», и «встроить» убирают пункт из меню;
+     * у «встроить» страница доступна через хаб/вкладку.
+     */
     public static function apply_rules(): void {
         if ( ! self::applies() ) {
             return;
@@ -117,16 +126,40 @@ class WP_Hub {
             if ( $action !== 'hide' && $action !== 'embed' ) {
                 continue;
             }
-            if ( in_array( self::parse_key( $key )[1], self::PROTECTED, true ) ) {
+            $slug = self::parse_key( $key )[1];
+            if ( in_array( $slug, self::PROTECTED, true ) ) {
                 continue;
             }
-            list( $parent, $slug ) = self::parse_key( $key );
-            if ( $parent !== '' ) {
-                remove_submenu_page( $parent, $slug );
-            } else {
-                remove_menu_page( $slug );
-            }
+            self::$hide[] = self::href_match( $slug );
         }
+    }
+
+    /** Подстрока (окончание href) для CSS-скрытия пункта меню по его слагу. */
+    private static function href_match( string $slug ): string {
+        // Файловые слаги (edit.php?post_type=…, plugins.php) — href оканчивается слагом.
+        if ( strpos( $slug, '.php' ) !== false ) {
+            return $slug;
+        }
+        // Слаги-страницы — href вида admin.php?page=<slug>.
+        return 'page=' . $slug;
+    }
+
+    /** CSS, прячущий выбранные пункты меню. Доступ к страницам сохраняется. */
+    public static function menu_css(): void {
+        if ( ! self::applies() || empty( self::$hide ) ) {
+            return;
+        }
+        echo '<style id="wphub-menu-hide">';
+        foreach ( array_unique( self::$hide ) as $m ) {
+            // Прячем li, у которого прямой ссылке-потомку href оканчивается на наш слаг.
+            echo '#adminmenu li:has(> a[href$="' . esc_attr( $m ) . '"]){display:none!important}';
+        }
+        echo '</style>';
+    }
+
+    /** URL пункта по слагу: файловый (edit.php?…) или страничный (admin.php?page=…). */
+    private static function page_url( string $slug ): string {
+        return strpos( $slug, '.php' ) !== false ? admin_url( $slug ) : admin_url( 'admin.php?page=' . $slug );
     }
 
     /* ── Список встроенных вкладок ────────────────────────────── */
@@ -162,7 +195,7 @@ class WP_Hub {
         foreach ( self::embedded_tabs() as $slug => $tab ) {
             printf(
                 '<a href="%s" class="wphub-tab%s">%s</a>',
-                esc_url( admin_url( 'admin.php?page=' . $slug ) ),
+                esc_url( self::page_url( $slug ) ),
                 $slug === $active ? ' active' : '',
                 esc_html( $tab['label'] )
             );
@@ -196,7 +229,7 @@ class WP_Hub {
     /* ── Лендинг хаба ─────────────────────────────────────────── */
 
     public static function render_hub(): void {
-        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+        if ( ! is_user_logged_in() ) {
             wp_die( 'Нет доступа' );
         }
         $cfg = self::cfg();
@@ -207,7 +240,7 @@ class WP_Hub {
         foreach ( self::embedded_tabs() as $slug => $tab ) {
             printf(
                 '<a class="wphub-card" href="%s">%s</a>',
-                esc_url( admin_url( 'admin.php?page=' . $slug ) ),
+                esc_url( self::page_url( $slug ) ),
                 esc_html( $tab['label'] )
             );
         }
@@ -215,7 +248,7 @@ class WP_Hub {
         if ( ! self::embedded_tabs() ) {
             echo '<p>Пока ничего не встроено. Откройте <a href="' .
                 esc_url( admin_url( 'options-general.php?page=' . self::SETTINGS_SLUG ) ) .
-                '">настройки WooCommerce Menu Hub</a> и отметьте пункты «Встроить».</p>';
+                '">настройки WP Admin Menu Hub</a> и отметьте пункты «Встроить».</p>';
         }
         echo '</div>';
     }
@@ -288,7 +321,7 @@ class WP_Hub {
         global $menu, $submenu;
         ?>
         <div class="wrap wphub-wrap">
-            <h1>WooCommerce Menu Hub</h1>
+            <h1>WP Admin Menu Hub</h1>
             <p>Отметьте, что сделать с каждым пунктом меню: <b>Показать</b> (как есть), <b>Скрыть</b> (убрать из меню), <b>Встроить</b> (как вкладку в единый хаб «<?php echo esc_html( $cfg['hub_title'] ); ?>»).</p>
             <form method="post">
                 <?php wp_nonce_field( 'wphub_settings' ); ?>
